@@ -1,0 +1,447 @@
+<div class="apr-wrapper" data-lang="{{lang}}">
+  <!-- Top Header & Bilingual Switcher -->
+  <header class="apr-header">
+    <div class="apr-header-title">
+      <h2><i class="fas fa-wrench"></i> {{i18n.Title}}</h2>
+      <p class="apr-subtitle">{{i18n.Subtitle}}</p>
+    </div>
+    <div class="apr-lang-switcher" title="{{i18n.LangSwitchLabel}}">
+      <span class="apr-lang-label"><i class="fas fa-globe"></i> {{i18n.LangSwitchLabel}}:</span>
+      <button type="button" class="apr-lang-btn {{#if isLangDE}}active{{/if}}" data-action="switch-lang" data-lang="de">
+        DE
+      </button>
+      <button type="button" class="apr-lang-btn {{#if isLangEN}}active{{/if}}" data-action="switch-lang" data-lang="en">
+        EN
+      </button>
+    </div>
+  </header>
+
+  <!-- Stepper Bar -->
+  <nav class="apr-stepper">
+    <div class="apr-step-pill {{#if isStep1}}active{{/if}} {{#if step1Done}}done{{/if}}">
+      <i class="fas fa-folder-tree"></i> {{i18n.Step1Badge}}
+    </div>
+    <div class="apr-step-divider"><i class="fas fa-chevron-right"></i></div>
+    <div class="apr-step-pill {{#if isStep2}}active{{/if}} {{#if step2Done}}done{{/if}}">
+      <i class="fas fa-magnifying-glass"></i> {{i18n.Step2Badge}}
+    </div>
+    <div class="apr-step-divider"><i class="fas fa-chevron-right"></i></div>
+    <div class="apr-step-pill {{#if isStep2}}ready{{/if}} {{#if step3Done}}done{{/if}}">
+      <i class="fas fa-database"></i> {{i18n.Step3Badge}}
+    </div>
+    <div class="apr-step-divider"><i class="fas fa-chevron-right"></i></div>
+    <div class="apr-step-pill {{#if isStep4}}active done{{/if}}">
+      <i class="fas fa-clipboard-check"></i> {{i18n.Step4Badge}}
+    </div>
+  </nav>
+
+  <!-- Busy Overlay when scanning or updating -->
+  {{#if isBusy}}
+  <div class="apr-busy-banner">
+    <i class="fas fa-spinner fa-spin"></i>
+    <span>{{busyMessage}}</span>
+  </div>
+  {{/if}}
+
+  <!-- ===================================================================== -->
+  <!-- STEP 1: ROOT DIRECTORY READ & DYNAMIC FOLDER SELECTION                -->
+  <!-- ===================================================================== -->
+  {{#if isStep1}}
+  <section class="apr-step-section apr-step-1">
+    <div class="apr-section-intro">
+      <h3>{{i18n.Step1Title}}</h3>
+      <p>{{i18n.Step1Desc}}</p>
+    </div>
+
+    <div class="apr-folder-toolbar">
+      <button type="button" class="apr-btn apr-btn-secondary" data-action="select-safe">
+        <i class="fas fa-check-double"></i> {{i18n.SelectSafeBtn}}
+      </button>
+      <button type="button" class="apr-btn apr-btn-secondary" data-action="select-all">
+        <i class="fas fa-check-square"></i> {{i18n.SelectAllBtn}}
+      </button>
+      <button type="button" class="apr-btn apr-btn-secondary" data-action="deselect-all">
+        <i class="far fa-square"></i> {{i18n.DeselectAllBtn}}
+      </button>
+      <button type="button" class="apr-btn apr-btn-secondary" data-action="refresh-dirs">
+        <i class="fas fa-sync-alt"></i> {{i18n.RefreshDirsBtn}}
+      </button>
+    </div>
+
+    <!-- Inline Protected Folder Warning -->
+    {{#if hasProtectedSelected}}
+    <div class="apr-alert apr-alert-warning" role="alert">
+      <div class="apr-alert-icon"><i class="fas fa-exclamation-triangle"></i></div>
+      <div class="apr-alert-content">
+        <strong>{{i18n.ProtectedWarningTitle}} ({{selectedProtectedList}})</strong>
+        <p>{{i18n.ProtectedWarningText}}</p>
+      </div>
+    </div>
+    {{/if}}
+
+    <!-- Dynamic Folder Checklist -->
+    <div class="apr-folder-list apr-scroll-container">
+      <label class="apr-folder-item apr-folder-root {{#if includeRootFiles}}checked{{/if}}">
+        <input type="checkbox" data-action="toggle-root-files" {{#if includeRootFiles}}checked{{/if}} />
+        <span class="apr-folder-icon"><i class="fas fa-file-Lines"></i></span>
+        <span class="apr-folder-name">{{i18n.RootFilesOption}} ({{rootFileCount}})</span>
+        <span class="apr-badge apr-badge-root">{{i18n.RootFilesBadge}}</span>
+      </label>
+
+      {{#each dirs}}
+      <label class="apr-folder-item {{#if this.isProtected}}apr-folder-protected{{/if}} {{#if this.checked}}checked{{/if}}">
+        <input type="checkbox" class="apr-dir-checkbox" data-dir-path="{{this.path}}" {{#if this.checked}}checked{{/if}} />
+        <span class="apr-folder-icon">
+          {{#if this.isProtected}}
+          <i class="fas fa-shield-alt"></i>
+          {{else}}
+          <i class="fas fa-folder-open"></i>
+          {{/if}}
+        </span>
+        <span class="apr-folder-name">{{this.name}}/</span>
+        {{#if this.isProtected}}
+        <span class="apr-badge apr-badge-protected"><i class="fas fa-lock"></i> {{../i18n.ProtectedFolderBadge}}</span>
+        {{else}}
+        <span class="apr-badge apr-badge-user">{{../i18n.UserFolderBadge}}</span>
+        {{/if}}
+      </label>
+      {{/each}}
+    </div>
+
+    <!-- Optional Subpath Filter -->
+    <div class="apr-subpath-box">
+      <label for="apr-subpath-input">{{i18n.SubpathFilterLabel}}</label>
+      <input
+        id="apr-subpath-input"
+        type="text"
+        class="apr-input"
+        value="{{subpathFilter}}"
+        placeholder="{{i18n.SubpathFilterPlaceholder}}"
+        data-action="subpath-input"
+      />
+    </div>
+
+    <footer class="apr-footer">
+      <button type="button" class="apr-btn apr-btn-primary apr-btn-lg" data-action="start-scan" {{#if isBusy}}disabled{{/if}}>
+        <i class="fas fa-search"></i> {{i18n.StartScanBtn}}
+      </button>
+    </footer>
+  </section>
+  {{/if}}
+
+  <!-- ===================================================================== -->
+  <!-- STEP 2 & 3: PRE-UPDATE PREVIEW, COLLISION RESOLUTION & CONFIRMATION   -->
+  <!-- ===================================================================== -->
+  {{#if isStep2}}
+  <section class="apr-step-section apr-step-2">
+    <div class="apr-section-intro">
+      <h3>{{i18n.Step2Title}}</h3>
+      <p>{{i18n.Step2Desc}}</p>
+    </div>
+
+    <!-- Summary Metric Cards -->
+    <div class="apr-stats-grid">
+      <div class="apr-stat-card apr-stat-neutral">
+        <span class="apr-stat-value">{{stats.indexedCount}}</span>
+        <span class="apr-stat-label">{{i18n.StatIndexedFiles}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-neutral">
+        <span class="apr-stat-value">{{stats.intactCount}}</span>
+        <span class="apr-stat-label">{{i18n.StatIntactPaths}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-success">
+        <span class="apr-stat-value">{{stats.readyCount}}</span>
+        <span class="apr-stat-label">{{i18n.StatReadyToUpdate}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-warning">
+        <span class="apr-stat-value">{{stats.collisionCount}}</span>
+        <span class="apr-stat-label">{{i18n.StatCollisions}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-danger">
+        <span class="apr-stat-value">{{stats.missingCount}}</span>
+        <span class="apr-stat-label">{{i18n.StatMissing}}</span>
+      </div>
+    </div>
+
+    <!-- Tabs & Filter Bar -->
+    <div class="apr-tabs-bar">
+      <div class="apr-tabs">
+        <button type="button" class="apr-tab-btn apr-tab-success {{#if isTabReady}}active{{/if}}" data-action="switch-tab" data-tab="ready">
+          <i class="fas fa-check-circle"></i> {{i18n.TabReady}} <span class="apr-count-pill">{{stats.readyCount}}</span>
+        </button>
+        <button type="button" class="apr-tab-btn apr-tab-warning {{#if isTabCollisions}}active{{/if}}" data-action="switch-tab" data-tab="collisions">
+          <i class="fas fa-exclamation-triangle"></i> {{i18n.TabCollisions}} <span class="apr-count-pill">{{stats.collisionCount}}</span>
+        </button>
+        <button type="button" class="apr-tab-btn apr-tab-danger {{#if isTabMissing}}active{{/if}}" data-action="switch-tab" data-tab="missing">
+          <i class="fas fa-times-circle"></i> {{i18n.TabMissing}} <span class="apr-count-pill">{{stats.missingCount}}</span>
+        </button>
+      </div>
+      <div class="apr-search-box">
+        <i class="fas fa-filter"></i>
+        <input
+          type="text"
+          class="apr-filter-input"
+          value="{{searchQuery}}"
+          placeholder="{{i18n.FilterPlaceholder}}"
+          data-action="filter-input"
+        />
+      </div>
+    </div>
+
+    <!-- TAB 1: READY TO UPDATE -->
+    {{#if isTabReady}}
+    <div class="apr-table-container apr-scroll-container">
+      {{#if readyRows.length}}
+      <table class="apr-table">
+        <thead>
+          <tr>
+            <th class="apr-col-check">
+              <input type="checkbox" data-action="toggle-all-ready" {{#if allReadyIncluded}}checked{{/if}} title="{{i18n.ColInclude}}" />
+            </th>
+            <th>{{i18n.ColDocType}}</th>
+            <th>{{i18n.ColDocName}}</th>
+            <th>{{i18n.ColField}}</th>
+            <th>{{i18n.ColOldPath}}</th>
+            <th>{{i18n.ColNewPath}}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{#each readyRows}}
+          <tr class="{{#unless this.included}}apr-row-muted{{/unless}}">
+            <td class="apr-col-check">
+              <input type="checkbox" class="apr-ready-checkbox" data-finding-id="{{this.id}}" {{#if this.included}}checked{{/if}} />
+            </td>
+            <td><span class="apr-doc-badge">{{this.docTypeLabel}}</span></td>
+            <td class="apr-cell-name">{{this.docName}}</td>
+            <td class="apr-cell-field"><code>{{this.fieldPath}}</code></td>
+            <td class="apr-cell-path apr-path-old"><code>{{this.oldPath}}</code></td>
+            <td class="apr-cell-path apr-path-new"><code>{{this.newPath}}</code></td>
+          </tr>
+          {{/each}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="apr-empty-state">
+        <i class="fas fa-check-circle"></i>
+        <p>{{i18n.EmptyReady}}</p>
+      </div>
+      {{/if}}
+    </div>
+    {{/if}}
+
+    <!-- TAB 2: COLLISIONS -->
+    {{#if isTabCollisions}}
+    <div class="apr-info-banner apr-info-warning">
+      <i class="fas fa-info-circle"></i>
+      <span>{{i18n.CollisionResolveInfo}}</span>
+    </div>
+    <div class="apr-table-container apr-scroll-container">
+      {{#if collisionRows.length}}
+      <table class="apr-table">
+        <thead>
+          <tr>
+            <th>{{i18n.ColDocType}}</th>
+            <th>{{i18n.ColDocName}}</th>
+            <th>{{i18n.ColField}}</th>
+            <th>{{i18n.ColOldPath}}</th>
+            <th>{{i18n.ColResolution}}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{#each collisionRows}}
+          <tr class="{{#if this.isResolved}}apr-row-resolved{{/if}}">
+            <td><span class="apr-doc-badge">{{this.docTypeLabel}}</span></td>
+            <td class="apr-cell-name">{{this.docName}}</td>
+            <td class="apr-cell-field"><code>{{this.fieldPath}}</code></td>
+            <td class="apr-cell-path apr-path-old">
+              <strong>{{this.fileName}}</strong>
+              <div><code>{{this.oldPath}}</code></div>
+            </td>
+            <td class="apr-cell-select">
+              <select class="apr-collision-select" data-collision-id="{{this.id}}">
+                <option value="skip">{{../i18n.CollisionSkipOption}}</option>
+                {{#each this.candidateOptions}}
+                <option value="{{this.path}}" {{#if this.selected}}selected{{/if}}>{{this.path}}</option>
+                {{/each}}
+              </select>
+            </td>
+          </tr>
+          {{/each}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="apr-empty-state">
+        <i class="fas fa-check-circle"></i>
+        <p>{{i18n.EmptyCollisions}}</p>
+      </div>
+      {{/if}}
+    </div>
+    {{/if}}
+
+    <!-- TAB 3: MISSING -->
+    {{#if isTabMissing}}
+    <div class="apr-info-banner apr-info-danger">
+      <i class="fas fa-exclamation-circle"></i>
+      <span>{{i18n.MissingInfo}}</span>
+    </div>
+    <div class="apr-table-container apr-scroll-container">
+      {{#if missingRows.length}}
+      <table class="apr-table">
+        <thead>
+          <tr>
+            <th>{{i18n.ColDocType}}</th>
+            <th>{{i18n.ColDocName}}</th>
+            <th>{{i18n.ColField}}</th>
+            <th>{{i18n.ColFilename}}</th>
+            <th>{{i18n.ColOldPath}}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{#each missingRows}}
+          <tr>
+            <td><span class="apr-doc-badge">{{this.docTypeLabel}}</span></td>
+            <td class="apr-cell-name">{{this.docName}}</td>
+            <td class="apr-cell-field"><code>{{this.fieldPath}}</code></td>
+            <td><strong>{{this.fileName}}</strong></td>
+            <td class="apr-cell-path apr-path-missing"><code>{{this.oldPath}}</code></td>
+          </tr>
+          {{/each}}
+        </tbody>
+      </table>
+      {{else}}
+      <div class="apr-empty-state">
+        <i class="fas fa-check-circle"></i>
+        <p>{{i18n.EmptyMissing}}</p>
+      </div>
+      {{/if}}
+    </div>
+    {{/if}}
+
+    <!-- Step 3 Confirmation Footer -->
+    <footer class="apr-footer apr-footer-split">
+      <div class="apr-footer-left">
+        <button type="button" class="apr-btn apr-btn-secondary" data-action="back-step1" {{#if isBusy}}disabled{{/if}}>
+          <i class="fas fa-arrow-left"></i> {{i18n.BackToStep1Btn}}
+        </button>
+        <button type="button" class="apr-btn apr-btn-secondary" data-action="start-scan" {{#if isBusy}}disabled{{/if}}>
+          <i class="fas fa-sync-alt"></i> {{i18n.ReScanBtn}}
+        </button>
+      </div>
+      <div class="apr-footer-right">
+        <button
+          type="button"
+          class="apr-btn apr-btn-success apr-btn-lg"
+          data-action="apply-updates"
+          {{#unless canApplyUpdates}}disabled{{/unless}}
+        >
+          <i class="fas fa-bolt"></i> {{i18n.ConfirmApplyBtn}} ({{selectedUpdateCount}})
+        </button>
+      </div>
+    </footer>
+  </section>
+  {{/if}}
+
+  <!-- ===================================================================== -->
+  <!-- STEP 4: FINAL EXECUTION SUMMARY                                       -->
+  <!-- ===================================================================== -->
+  {{#if isStep4}}
+  <section class="apr-step-section apr-step-4">
+    <div class="apr-section-intro">
+      <h3><i class="fas fa-check-double"></i> {{i18n.Step4Title}}</h3>
+      <p>{{i18n.Step4Desc}}</p>
+    </div>
+
+    <!-- Category Breakdown Metrics -->
+    <div class="apr-stats-grid apr-stats-grid-summary">
+      <div class="apr-stat-card apr-stat-success">
+        <span class="apr-stat-value">{{summary.totalUpdated}}</span>
+        <span class="apr-stat-label">{{i18n.SummaryTotalUpdated}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-neutral">
+        <span class="apr-stat-value">{{summary.scenes}}</span>
+        <span class="apr-stat-label">{{i18n.SummaryScenes}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-neutral">
+        <span class="apr-stat-value">{{summary.actors}}</span>
+        <span class="apr-stat-label">{{i18n.SummaryActors}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-neutral">
+        <span class="apr-stat-value">{{summary.tokens}}</span>
+        <span class="apr-stat-label">{{i18n.SummaryTokens}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-neutral">
+        <span class="apr-stat-value">{{summary.items}}</span>
+        <span class="apr-stat-label">{{i18n.SummaryItems}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-neutral">
+        <span class="apr-stat-value">{{summary.journals}}</span>
+        <span class="apr-stat-label">{{i18n.SummaryJournals}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-neutral">
+        <span class="apr-stat-value">{{summary.playlists}}</span>
+        <span class="apr-stat-label">{{i18n.SummaryPlaylists}}</span>
+      </div>
+      <div class="apr-stat-card apr-stat-neutral">
+        <span class="apr-stat-value">{{summary.other}}</span>
+        <span class="apr-stat-label">{{i18n.SummaryOther}}</span>
+      </div>
+      {{#if summary.errors}}
+      <div class="apr-stat-card apr-stat-danger">
+        <span class="apr-stat-value">{{summary.errors}}</span>
+        <span class="apr-stat-label">{{i18n.SummaryErrors}}</span>
+      </div>
+      {{/if}}
+    </div>
+
+    <!-- Detailed Audit Log Table -->
+    <div class="apr-table-container apr-scroll-container">
+      <table class="apr-table">
+        <thead>
+          <tr>
+            <th>{{i18n.ColDocType}}</th>
+            <th>{{i18n.ColDocName}}</th>
+            <th>{{i18n.ColField}}</th>
+            <th>{{i18n.ColOldPath}}</th>
+            <th>{{i18n.ColNewPath}}</th>
+            <th>{{i18n.ColStatus}}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{#each summaryRows}}
+          <tr class="{{#unless this.success}}apr-row-error{{/unless}}">
+            <td><span class="apr-doc-badge">{{this.docTypeLabel}}</span></td>
+            <td class="apr-cell-name">{{this.docName}}</td>
+            <td class="apr-cell-field"><code>{{this.fieldPath}}</code></td>
+            <td class="apr-cell-path apr-path-old"><code>{{this.oldPath}}</code></td>
+            <td class="apr-cell-path apr-path-new"><code>{{this.newPath}}</code></td>
+            <td>
+              {{#if this.success}}
+              <span class="apr-status-pill apr-status-ok"><i class="fas fa-check"></i> {{../i18n.StatusSuccess}}</span>
+              {{else}}
+              <span class="apr-status-pill apr-status-err" title="{{this.errorMsg}}"><i class="fas fa-times"></i> {{../i18n.StatusError}}</span>
+              {{/if}}
+            </td>
+          </tr>
+          {{/each}}
+        </tbody>
+      </table>
+    </div>
+
+    <footer class="apr-footer apr-footer-split">
+      <div class="apr-footer-left">
+        <button type="button" class="apr-btn apr-btn-secondary" data-action="export-json">
+          <i class="fas fa-file-download"></i> {{i18n.ExportJsonBtn}}
+        </button>
+        <button type="button" class="apr-btn apr-btn-secondary" data-action="back-step1">
+          <i class="fas fa-redo"></i> {{i18n.NewScanBtn}}
+        </button>
+      </div>
+      <div class="apr-footer-right">
+        <button type="button" class="apr-btn apr-btn-primary" data-action="close-app">
+          <i class="fas fa-check"></i> {{i18n.CloseBtn}}
+        </button>
+      </div>
+    </footer>
+  </section>
+  {{/if}}
+</div>
