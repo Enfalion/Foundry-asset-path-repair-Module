@@ -4,7 +4,7 @@
   "description": "Recursively scans Foundry VTT Data folders and automatically repairs orphaned asset paths across Scenes, Actors, Prototype & Placed Tokens, Items, Journal Handouts (including embedded HTML media), Playlists, Rollable Tables, Card Stacks, and Macros.",
   "version": "1.0.0",
   "compatibility": {
-    "minimum": "12",
+    "minimum": "11",
     "verified": "14"
   },
   "authors": [
@@ -32,9 +32,9 @@
     }
   ],
   "url": "https://github.com/Enfalion/Foundry-asset-path-repair-Module",
-  "manifest": "https://github.com/Enfalion/Foundry-asset-path-repair-Module/releases/latest/download/module.json",
+  "manifest": "https://raw.githubusercontent.com/Enfalion/Foundry-asset-path-repair-Module/main/module.json",
   "download": "https://github.com/Enfalion/Foundry-asset-path-repair-Module/releases/latest/download/module.zip",
-  "readme": "https://github.com/Enfalion/Foundry-asset-path-repair-Module/blob/main/README.md",
+  "readme": "https://raw.githubusercontent.com/Enfalion/Foundry-asset-path-repair-Module/main/README.md",
   "bugs": "https://github.com/Enfalion/Foundry-asset-path-repair-Module/issues",
   "license": "MIT"
 }
