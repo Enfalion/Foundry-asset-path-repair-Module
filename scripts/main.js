@@ -7,8 +7,21 @@ import {
   MODULE_ID,
   TRANSLATIONS,
   translate,
+  normalizePath,
+  encodeFoundryPath,
+  isWildcardPath,
+  wildcardToRegExp,
   AssetPathRepairEngine
 } from "./repair.js";
+
+export {
+  MODULE_ID,
+  normalizePath,
+  encodeFoundryPath,
+  isWildcardPath,
+  wildcardToRegExp,
+  AssetPathRepairEngine
+};
 
 const TEMPLATE_PATH = `modules/${MODULE_ID}/templates/repair-app.hbs`;
 
@@ -608,7 +621,7 @@ export function openAssetPathRepairWindow() {
 /* FOUNDRY VTT LIFECYCLE HOOKS                                               */
 /* ========================================================================= */
 
-Hooks.once("init", () => {
+globalThis.Hooks?.once("init", () => {
   console.log(`${MODULE_ID} | Initializing Asset Path Auto-Repair (Foundry VTT V12–V14)`);
 
   AssetPathRepairApp = createRepairAppClass();
@@ -649,7 +662,7 @@ Hooks.once("init", () => {
  * Inject the "Asset Path Auto-Repair" button into the Game Settings sidebar (`renderSettings`).
  * Compatible with both Foundry V11/V12 (jQuery) and Foundry V13/V14 (ApplicationV2 native HTMLElement).
  */
-Hooks.on("renderSettings", (_app, html) => {
+globalThis.Hooks?.on("renderSettings", (_app, html) => {
   if (!game.user?.isGM) return;
 
   const root = html instanceof HTMLElement ? html : (html?.[0] ?? html);

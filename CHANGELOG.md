@@ -4,6 +4,34 @@ All notable changes to the **Asset Path Auto-Repair** module for Foundry Virtual
 
 ---
 
+## [1.0.2] — 2026-11-14
+
+### 🇬🇧 English — Scene Background Persistence, V14 Levels & Wildcard Token Support
+- **Fixed Scene Background Persistence & V14 Multi-Level Support (`scene.levels` / "Aktuelle Ebene")**:
+  - Replaced flat `{ "background.src": newPath }` updates using `{ diff: false }` with properly expanded nested objects (`foundry.utils.expandObject({ "background.src": encodedPath })`) and synchronized updates across Foundry V14 `scene.levels` ("Aktuelle Ebene") embedded documents and arrays.
+  - Added automatic Scene thumbnail regeneration (`scene.createThumbnail({ img: encodedPath })`) when a Scene background is updated so the navigation sidebar preview refreshes immediately.
+  - Added live re-rendering of open `SceneConfig` and Document sheets (`sheet.render(true)`) and passed the active `Scene` instance to `canvas.draw(scene)`.
+- **Consistent URI Path Encoding (`%20` vs. Spaces)**:
+  - Added `encodeFoundryPath` so resolved paths preserve RFC 3986 segment encoding (e.g., spaces encoded as `%20`) while keeping `/` separators and wildcard characters (`*`, `?`) intact.
+- **Strict Post-Write Verification**:
+  - Added post-update verification against `_source` and `scene.levels` with automatic fallback retry; if a document still fails to persist the new path, it is accurately marked as `success: false` in the report rather than a false positive.
+- **Wildcard Token Path Support (`*.png`, `Prefix*.webp`)**:
+  - Added wildcard pattern detection and directory suffix matching so prototype and placed tokens using wildcard paths (e.g., `NPC-Bilder/monster/goblins/*.png` or `NPC-Bilder/monster/kobold/schurke/Kobold*.png`) resolve to their relocated directories while preserving the wildcard pattern at the end.
+
+### 🇩🇪 Deutsch — Szenen-Hintergrund-Persistenz, V14 Ebenen & Wildcard-Token-Unterstützung
+- **Korrektur der Szenen-Hintergrund-Persistenz & Foundry V14 Ebenen (`scene.levels` / „Aktuelle Ebene")**:
+  - Ersetzung flacher `{ "background.src": newPath }`-Updates mit `{ diff: false }` durch sauber verschachtelte Update-Objekte (`foundry.utils.expandObject({ "background.src": encodedPath })`) sowie automatische Synchronisierung von Foundry V14 `scene.levels`-Dokumenten („Aktuelle Ebene").
+  - Automatische Neugenerierung des Szenen-Vorschaubildes (`scene.createThumbnail({ img: encodedPath })`) nach Hintergrund-Updates.
+  - Sofortiges Neuzeichnen geöffneter `SceneConfig`-Fenster (`sheet.render(true)`) sowie vollständiger Canvas-Reload (`canvas.draw(scene)`).
+- **Konsistente URI-Pfad-Kodierung (`%20` statt Leerzeichen)**:
+  - Neue Funktion `encodeFoundryPath`, die Leerzeichen und Sonderzeichen pro Pfadsegment sauber als `%20` kodiert, während `/` und Wildcard-Zeichen (`*`, `?`) erhalten bleiben.
+- **Strikte Post-Update-Verifizierung**:
+  - Jedes Update wird unmittelbar gegen `_source` und `scene.levels` gegengeprüft (inkl. Fallback-Retry), sodass nicht übernommene Pfade niemals fälschlich als `success: true` gemeldet werden.
+- **Unterstützung für Wildcard-Token-Pfade (`*.png`, `Prefix*.webp`)**:
+  - Erkennung und Auflösung von Wildcard-Pfaden (z. B. `NPC-Bilder/monster/goblins/*.png` oder `NPC-Bilder/monster/kobold/schurke/Kobold*.png`) anhand von Datei-Regex und Ordnerstruktur unter Beibehaltung des Wildcard-Musters.
+
+---
+
 ## [1.0.1] — 2026-11-10
 
 ### 🇬🇧 English — Official Foundry VTT Package Listing Compliance

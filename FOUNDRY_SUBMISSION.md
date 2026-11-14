@@ -1,6 +1,6 @@
-# Official Foundry VTT Package Submission Reference (`v1.0.1`)
+# Official Foundry VTT Package Submission Reference (`v1.0.2`)
 
-Use the exact copy-paste values below when submitting **Asset Path Auto-Repair** at **[https://foundryvtt.com/creators/submit/](https://foundryvtt.com/creators/submit/)** and when registering the initial **`1.0.1`** release in the Foundry VTT Package Administration interface.
+Use the exact copy-paste values below when submitting **Asset Path Auto-Repair** at **[https://foundryvtt.com/creators/submit/](https://foundryvtt.com/creators/submit/)** and when registering the initial **`1.0.2`** release in the Foundry VTT Package Administration interface.
 
 ---
 
@@ -79,16 +79,16 @@ https://raw.githubusercontent.com/Enfalion/Fouundry-asset-path-repair-Module/mai
 
 ---
 
-## Part 2: Initial Release Version Form (`v1.0.1`)
+## Part 2: Initial Release Version Form (`v1.0.2`)
 
 - **Version**:
 ```text
-1.0.1
+1.0.2
 ```
 
 - **Manifest URL (Version-Specific for Foundry Admin Portal)**:
 ```text
-https://github.com/Enfalion/Fouundry-asset-path-repair-Module/releases/download/v1.0.1/module.json
+https://github.com/Enfalion/Fouundry-asset-path-repair-Module/releases/download/v1.0.2/module.json
 ```
 
 - **Manifest URL (Latest / Universal)**:
@@ -98,7 +98,7 @@ https://github.com/Enfalion/Fouundry-asset-path-repair-Module/releases/latest/do
 
 - **Download URL (Version-Specific Archive)**:
 ```text
-https://github.com/Enfalion/Fouundry-asset-path-repair-Module/releases/download/v1.0.1/module.zip
+https://github.com/Enfalion/Fouundry-asset-path-repair-Module/releases/download/v1.0.2/module.zip
 ```
 
 - **Minimum Core Version**:

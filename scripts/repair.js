@@ -1,8 +1,8 @@
 /**
  * Asset Path Auto-Repair — Core Engine (Foundry VTT V12–V14, backwards-compatible with V11)
  * Recursively indexes Data directories, detects orphaned LevelDB asset references across all
- * Foundry VTT document types and embedded collections, handles filename collisions safely,
- * parses HTML media tags, and executes resilient database updates.
+ * Foundry VTT document types and embedded collections (including V14 Scene Levels and wildcard paths),
+ * handles filename collisions safely, parses HTML media tags, and executes verified database updates.
  */
 
 export const MODULE_ID = "asset-path-repair";
@@ -264,7 +264,13 @@ export function normalizePath(rawPath) {
   if (!rawPath || typeof rawPath !== "string") return "";
   let cleaned = rawPath.trim();
   const qIdx = cleaned.indexOf("?");
-  if (qIdx !== -1) cleaned = cleaned.slice(0, qIdx);
+  if (qIdx !== -1) {
+    // Only strip '?' if it looks like a query parameter (e.g. ?v=1) rather than a single-char filename wildcard
+    const afterQ = cleaned.slice(qIdx + 1);
+    if (afterQ.includes("=") || !afterQ.includes(".")) {
+      cleaned = cleaned.slice(0, qIdx);
+    }
+  }
   const hIdx = cleaned.indexOf("#");
   if (hIdx !== -1) cleaned = cleaned.slice(0, hIdx);
   try {
@@ -277,6 +283,48 @@ export function normalizePath(rawPath) {
 }
 
 /**
+ * Encode a normalized path for Foundry VTT's FilePathField and PIXI loader:
+ * encodes each path segment via `encodeURIComponent` (turning spaces into `%20`, etc.)
+ * while keeping path separators (`/`) and wildcard characters (`*`, `?`) intact.
+ * @param {string} pathStr
+ * @returns {string}
+ */
+export function encodeFoundryPath(pathStr) {
+  if (!pathStr || typeof pathStr !== "string") return "";
+  const norm = normalizePath(pathStr);
+  if (!norm) return "";
+  return norm
+    .split("/")
+    .map((seg) =>
+      encodeURIComponent(seg)
+        .replace(/%2A/gi, "*")
+        .replace(/%3F/gi, "?")
+    )
+    .join("/");
+}
+
+/**
+ * Check whether a path string contains wildcard characters (`*` or `?`).
+ * @param {string} pathStr
+ * @returns {boolean}
+ */
+export function isWildcardPath(pathStr) {
+  if (!pathStr || typeof pathStr !== "string") return false;
+  return /[*?]/.test(normalizePath(pathStr));
+}
+
+/**
+ * Convert a wildcard filename pattern (e.g. `*.png` or `Kobold*.png`) into a case-insensitive RegExp.
+ * @param {string} pattern
+ * @returns {RegExp}
+ */
+export function wildcardToRegExp(pattern) {
+  const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&");
+  const regexStr = "^" + escaped.replace(/\*/g, ".*").replace(/\?/g, ".") + "$";
+  return new RegExp(regexStr, "i");
+}
+
+/**
  * Extract the filename (`file.ext`) from a normalized path.
  * @param {string} normalizedPath
  * @returns {string}
@@ -285,6 +333,17 @@ export function extractFilename(normalizedPath) {
   if (!normalizedPath) return "";
   const idx = normalizedPath.lastIndexOf("/");
   return idx === -1 ? normalizedPath : normalizedPath.slice(idx + 1);
+}
+
+/**
+ * Extract the parent directory (`dir/subdir`) from a normalized path.
+ * @param {string} normalizedPath
+ * @returns {string}
+ */
+export function extractParentDir(normalizedPath) {
+  if (!normalizedPath) return "";
+  const idx = normalizedPath.lastIndexOf("/");
+  return idx === -1 ? "" : normalizedPath.slice(0, idx);
 }
 
 /**
@@ -302,6 +361,24 @@ export function looksLikeMediaPath(candidate) {
 }
 
 /**
+ * Safely extract all Level entries from a Foundry V14 `scene.levels` collection or `_source.levels` array.
+ * @param {any} scene
+ * @returns {any[]}
+ */
+export function getSceneLevelsList(scene) {
+  if (!scene) return [];
+  const levels = scene.levels;
+  if (!levels) {
+    return Array.isArray(scene._source?.levels) ? scene._source.levels : [];
+  }
+  if (Array.isArray(levels)) return levels;
+  if (typeof levels.values === "function") return Array.from(levels.values());
+  if (typeof levels[Symbol.iterator] === "function") return Array.from(levels);
+  if (typeof levels === "object") return Object.values(levels);
+  return [];
+}
+
+/**
  * Core Engine for indexing Data folders, scanning Foundry V14 documents, and applying updates.
  */
 export class AssetPathRepairEngine {
@@ -314,6 +391,8 @@ export class AssetPathRepairEngine {
     this.fileMap = new Map();
     /** @type {Map<string, string[]>} lowercase filename -> array of relative paths */
     this.fileMapLower = new Map();
+    /** @type {Map<string, string[]>} normalized parent directory -> array of filenames inside that directory */
+    this.dirFilesMap = new Map();
     /** @type {Map<string, Set<string>>} cached directory browse lookups for non-indexed folders */
     this.unindexedDirCache = new Map();
     /** @type {Set<string>} active protected prefixes allowed by user */
@@ -356,6 +435,7 @@ export class AssetPathRepairEngine {
     this.allKnownPathsLower.clear();
     this.fileMap.clear();
     this.fileMapLower.clear();
+    this.dirFilesMap.clear();
     this.unindexedDirCache.clear();
     this.allowedProtectedPrefixes.clear();
   }
@@ -374,6 +454,12 @@ export class AssetPathRepairEngine {
 
     const fileName = extractFilename(cleanPath);
     if (!fileName) return;
+
+    const parentDir = extractParentDir(cleanPath);
+    if (!this.dirFilesMap.has(parentDir)) {
+      this.dirFilesMap.set(parentDir, []);
+    }
+    this.dirFilesMap.get(parentDir).push(fileName);
 
     if (!this.fileMap.has(fileName)) {
       this.fileMap.set(fileName, []);
@@ -496,15 +582,11 @@ export class AssetPathRepairEngine {
   }
 
   /**
-   * Check if a normalized path currently exists on disk (either in the crawled index or via cached parent folder lookup).
-   * @param {string} cleanPath
-   * @returns {Promise<boolean>}
+   * Retrieve the set of normalized file paths inside `parentDir` on disk (cached).
+   * @param {string} parentDir
+   * @returns {Promise<Set<string>>}
    */
-  async pathExistsAtCurrentLocation(cleanPath) {
-    if (this.allKnownPaths.has(cleanPath)) return true;
-
-    const lastSlash = cleanPath.lastIndexOf("/");
-    const parentDir = lastSlash === -1 ? "" : cleanPath.slice(0, lastSlash);
+  async _getParentDirFilesOnDisk(parentDir) {
     if (!this.unindexedDirCache.has(parentDir)) {
       const filesInParent = new Set();
       try {
@@ -518,7 +600,127 @@ export class AssetPathRepairEngine {
       }
       this.unindexedDirCache.set(parentDir, filesInParent);
     }
-    return this.unindexedDirCache.get(parentDir).has(cleanPath);
+    return this.unindexedDirCache.get(parentDir);
+  }
+
+  /**
+   * Check if a normalized path (or wildcard pattern) currently exists at its stored location on disk.
+   * @param {string} cleanPath
+   * @returns {Promise<boolean>}
+   */
+  async pathExistsAtCurrentLocation(cleanPath) {
+    if (isWildcardPath(cleanPath)) {
+      const parentDir = extractParentDir(cleanPath);
+      const fileNamePattern = extractFilename(cleanPath);
+      const regex = wildcardToRegExp(fileNamePattern);
+
+      const indexedNames = this.dirFilesMap.get(parentDir);
+      if (indexedNames && indexedNames.some((name) => regex.test(name))) {
+        return true;
+      }
+
+      const diskFiles = await this._getParentDirFilesOnDisk(parentDir);
+      for (const f of diskFiles) {
+        if (regex.test(extractFilename(f))) return true;
+      }
+      return false;
+    }
+
+    if (this.allKnownPaths.has(cleanPath)) return true;
+    const parentDir = extractParentDir(cleanPath);
+    const diskFiles = await this._getParentDirFilesOnDisk(parentDir);
+    return diskFiles.has(cleanPath);
+  }
+
+  /**
+   * Evaluate a wildcard path (e.g. `NPC-Bilder/monster/goblins/*.png` or `.../Kobold*.png`)
+   * against all indexed directories and files.
+   * @param {string} cleanOldPath
+   */
+  async evaluateWildcardPath(cleanOldPath) {
+    if (await this.pathExistsAtCurrentLocation(cleanOldPath)) {
+      return { status: "intact", cleanOldPath };
+    }
+
+    const oldParentDir = extractParentDir(cleanOldPath);
+    const fileNamePattern = extractFilename(cleanOldPath);
+    if (!fileNamePattern) return { status: "ignored" };
+
+    const regex = wildcardToRegExp(fileNamePattern);
+    const oldSegments = oldParentDir
+      ? oldParentDir.split("/").filter(Boolean).map((s) => s.toLowerCase())
+      : [];
+
+    // Find all indexed directories containing at least one file matching the wildcard pattern
+    const matchingDirs = [];
+    for (const [dirPath, fileNames] of this.dirFilesMap.entries()) {
+      if (!fileNames.some((fn) => regex.test(fn))) continue;
+
+      const candSegments = dirPath
+        ? dirPath.split("/").filter(Boolean).map((s) => s.toLowerCase())
+        : [];
+
+      // Count how many trailing directory segments match (from leaf folder upwards)
+      let trailingScore = 0;
+      let i = oldSegments.length - 1;
+      let j = candSegments.length - 1;
+      while (i >= 0 && j >= 0 && oldSegments[i] === candSegments[j]) {
+        trailingScore++;
+        i--;
+        j--;
+      }
+
+      matchingDirs.push({
+        dirPath,
+        trailingScore
+      });
+    }
+
+    if (matchingDirs.length === 0) {
+      return {
+        status: "missing",
+        cleanOldPath,
+        fileName: fileNamePattern
+      };
+    }
+
+    let bestDirs = matchingDirs;
+    if (oldSegments.length > 0) {
+      const maxScore = Math.max(...matchingDirs.map((d) => d.trailingScore));
+      if (maxScore > 0) {
+        bestDirs = matchingDirs.filter((d) => d.trailingScore === maxScore);
+      } else {
+        // No folder segment matched; only allow matching solely by pattern if the pattern has a specific filename stem (e.g. `Kobold*.png`)
+        const stemWithoutWildcards = fileNamePattern.replace(/\.[^.]+$/, "").replace(/[*?]/g, "").trim();
+        if (stemWithoutWildcards.length === 0) {
+          return {
+            status: "missing",
+            cleanOldPath,
+            fileName: fileNamePattern
+          };
+        }
+      }
+    }
+
+    const candidatePaths = bestDirs.map((d) =>
+      encodeFoundryPath(d.dirPath ? `${d.dirPath}/${fileNamePattern}` : fileNamePattern)
+    );
+
+    if (candidatePaths.length === 1) {
+      return {
+        status: "ready",
+        cleanOldPath,
+        fileName: fileNamePattern,
+        newPath: candidatePaths[0]
+      };
+    }
+
+    return {
+      status: "collision",
+      cleanOldPath,
+      fileName: fileNamePattern,
+      candidates: candidatePaths
+    };
   }
 
   /**
@@ -534,6 +736,11 @@ export class AssetPathRepairEngine {
     const cleanOldPath = normalizePath(rawPath);
     if (!cleanOldPath) return { status: "ignored" };
 
+    // Handle wildcard token/asset paths (e.g. `*.png`, `Kobold*.png`)
+    if (isWildcardPath(cleanOldPath)) {
+      return this.evaluateWildcardPath(cleanOldPath);
+    }
+
     // 1. Check if the path still exists at its current location
     if (await this.pathExistsAtCurrentLocation(cleanOldPath)) {
       return { status: "intact", cleanOldPath };
@@ -546,7 +753,7 @@ export class AssetPathRepairEngine {
         status: "ready",
         cleanOldPath,
         fileName: extractFilename(cleanOldPath),
-        newPath: exactLowerMatch
+        newPath: encodeFoundryPath(exactLowerMatch)
       };
     }
 
@@ -572,7 +779,7 @@ export class AssetPathRepairEngine {
         status: "ready",
         cleanOldPath,
         fileName,
-        newPath: matches[0]
+        newPath: encodeFoundryPath(matches[0])
       };
     }
 
@@ -580,7 +787,7 @@ export class AssetPathRepairEngine {
       status: "collision",
       cleanOldPath,
       fileName,
-      candidates: [...matches]
+      candidates: matches.map((m) => encodeFoundryPath(m))
     };
   }
 
@@ -630,7 +837,7 @@ export class AssetPathRepairEngine {
   /**
    * Scan all Foundry V14 document collections and embedded collections for broken asset paths.
    * Covers:
-   * 1. Scenes (background.src, foreground, thumb, tiles, tokens + ring.subject.texture, sounds, notes)
+   * 1. Scenes (background.src, foreground, thumb, V14 scene.levels, tiles, tokens + ring.subject.texture, sounds, notes)
    * 2. Actors (img, prototypeToken.texture.src, prototypeToken.ring.subject.texture, system HTML, items, effects)
    * 3. World Items (img, system HTML, effects)
    * 4. Journal Entries & Pages (image/video/pdf/audio src, text HTML content)
@@ -707,23 +914,23 @@ export class AssetPathRepairEngine {
     };
 
     // =========================================================================
-    // 1. SCENES (game.scenes)
+    // 1. SCENES (game.scenes) + FOUNDRY V14 SCENE LEVELS (scene.levels)
     // =========================================================================
     for (const scene of game.scenes ?? []) {
       const sceneName = scene.name || scene.id;
+      const rootBgSrc = scene.background?.src ?? scene._source?.background?.src;
 
-      if (scene.background?.src) {
+      if (rootBgSrc) {
         await checkReference({
           docTypeKey: "APR.DocType.Scene",
           docCategory: "scenes",
           docName: sceneName,
           fieldPath: "background.src",
-          rawPath: scene.background.src,
+          rawPath: rootBgSrc,
           updateDescriptor: {
             kind: "sceneRoot",
             sceneId: scene.id,
-            fieldPath: "background.src",
-            noDiff: true
+            fieldPath: "background.src"
           }
         });
       }
@@ -740,8 +947,7 @@ export class AssetPathRepairEngine {
           updateDescriptor: {
             kind: "sceneRoot",
             sceneId: scene.id,
-            fieldPath: fgField,
-            noDiff: false
+            fieldPath: fgField
           }
         });
       }
@@ -756,10 +962,61 @@ export class AssetPathRepairEngine {
           updateDescriptor: {
             kind: "sceneRoot",
             sceneId: scene.id,
-            fieldPath: "thumb",
-            noDiff: false
+            fieldPath: "thumb"
           }
         });
+      }
+
+      // Foundry V14 Scene Levels ("Aktuelle Ebene" / `scene.levels`)
+      const levelsList = getSceneLevelsList(scene);
+      for (let lvlIdx = 0; lvlIdx < levelsList.length; lvlIdx++) {
+        const level = levelsList[lvlIdx];
+        if (!level) continue;
+        const levelId = level.id ?? level._id ?? String(lvlIdx);
+        const levelName = level.name || level.label || `Level #${lvlIdx + 1}`;
+        const levelLabel = `${sceneName} → ${levelName}`;
+
+        const lvlBgSrc = level.background?.src ?? level._source?.background?.src;
+        // If rootBgSrc already matched this exact path, sceneRoot's updater will update both scene and matching levels.
+        // If rootBgSrc was empty or different, register a dedicated sceneLevel finding.
+        if (lvlBgSrc && normalizePath(lvlBgSrc) !== normalizePath(rootBgSrc ?? "")) {
+          await checkReference({
+            docTypeKey: "APR.DocType.Scene",
+            docCategory: "scenes",
+            docName: levelLabel,
+            fieldPath: "background.src",
+            rawPath: lvlBgSrc,
+            updateDescriptor: {
+              kind: "sceneLevel",
+              sceneId: scene.id,
+              levelId,
+              levelIndex: lvlIdx,
+              fieldPath: "background.src"
+            }
+          });
+        }
+
+        const lvlFgSrc =
+          typeof level.foreground === "string"
+            ? level.foreground
+            : (level.foreground?.src ?? level._source?.foreground?.src);
+        const lvlFgField = typeof level.foreground === "string" ? "foreground" : "foreground.src";
+        if (lvlFgSrc && normalizePath(lvlFgSrc) !== normalizePath(fgSrc ?? "")) {
+          await checkReference({
+            docTypeKey: "APR.DocType.Scene",
+            docCategory: "scenes",
+            docName: levelLabel,
+            fieldPath: lvlFgField,
+            rawPath: lvlFgSrc,
+            updateDescriptor: {
+              kind: "sceneLevel",
+              sceneId: scene.id,
+              levelId,
+              levelIndex: lvlIdx,
+              fieldPath: lvlFgField
+            }
+          });
+        }
       }
 
       // Embedded Tiles
@@ -1334,8 +1591,172 @@ export class AssetPathRepairEngine {
   }
 
   /**
+   * Helper to update a specific level inside `scene.levels` (supports both V14 EmbeddedCollection Level documents
+   * and array-based `_source.levels` schemas) and verify the update.
+   * @param {any} scene
+   * @param {string} levelId
+   * @param {number} levelIndex
+   * @param {string} fieldPath
+   * @param {string} encodedPath
+   * @returns {Promise<boolean>}
+   */
+  async _updateSceneLevel(scene, levelId, levelIndex, fieldPath, encodedPath) {
+    const levelsList = getSceneLevelsList(scene);
+    const level =
+      scene.levels?.get?.(levelId) ??
+      levelsList.find((l) => (l?.id ?? l?._id) === levelId) ??
+      levelsList[levelIndex];
+
+    const checkLevelChanged = () => {
+      const refreshedList = getSceneLevelsList(scene);
+      const currentLvl =
+        scene.levels?.get?.(levelId) ??
+        refreshedList.find((l) => (l?.id ?? l?._id) === levelId) ??
+        refreshedList[levelIndex];
+      if (!currentLvl) return false;
+      const valLive = foundry.utils.getProperty(currentLvl, fieldPath);
+      const valSrc = currentLvl._source ? foundry.utils.getProperty(currentLvl._source, fieldPath) : undefined;
+      return (
+        normalizePath(valLive ?? "") === normalizePath(encodedPath) ||
+        normalizePath(valSrc ?? "") === normalizePath(encodedPath)
+      );
+    };
+
+    const expanded = foundry.utils.expandObject({ [fieldPath]: encodedPath });
+
+    // 1. Try direct Document#update on the Level document
+    if (level && typeof level.update === "function") {
+      try {
+        await level.update(expanded);
+        if (checkLevelChanged()) return true;
+      } catch (_err) {
+        // Fall through to embedded update
+      }
+    }
+
+    // 2. Try scene.updateEmbeddedDocuments("Level" / level.documentName)
+    if (level && typeof scene.updateEmbeddedDocuments === "function") {
+      const docName = level.documentName || "Level";
+      try {
+        await scene.updateEmbeddedDocuments(docName, [
+          { _id: level.id ?? level._id ?? levelId, ...expanded }
+        ]);
+        if (checkLevelChanged()) return true;
+      } catch (_err) {
+        // Fall through to array update
+      }
+    }
+
+    // 3. Fallback: if `scene._source.levels` is an array on Scene DataModel
+    if (Array.isArray(scene._source?.levels)) {
+      try {
+        const clonedLevels = foundry.utils.deepClone(scene._source.levels);
+        const targetIdx = clonedLevels.findIndex((l, idx) => (l?._id ?? l?.id ?? String(idx)) === levelId);
+        const idxToUse = targetIdx !== -1 ? targetIdx : levelIndex;
+        if (clonedLevels[idxToUse]) {
+          foundry.utils.setProperty(clonedLevels[idxToUse], fieldPath, encodedPath);
+          await scene.update({ levels: clonedLevels });
+          if (checkLevelChanged()) return true;
+        }
+      } catch (_err) {
+        // Ignore
+      }
+    }
+
+    return checkLevelChanged();
+  }
+
+  /**
+   * Update a Scene root field (`background.src`, `foreground.src`, `thumb`), synchronize any matching V14 `scene.levels`
+   * entries, verify persistence in `_source`, regenerate the scene thumbnail, and refresh open `SceneConfig` sheets.
+   * @param {any} scene
+   * @param {string} fieldPath
+   * @param {string} oldPath
+   * @param {string} encodedPath
+   */
+  async _updateSceneRootAndLevels(scene, fieldPath, oldPath, encodedPath) {
+    const cleanOld = normalizePath(oldPath);
+    const cleanNew = normalizePath(encodedPath);
+
+    // 1. Also update any V14 `scene.levels` whose fieldPath matches `oldPath`
+    let levelUpdated = false;
+    const levelsList = getSceneLevelsList(scene);
+    for (let idx = 0; idx < levelsList.length; idx++) {
+      const lvl = levelsList[idx];
+      if (!lvl) continue;
+      const lvlVal =
+        foundry.utils.getProperty(lvl, fieldPath) ??
+        (lvl._source ? foundry.utils.getProperty(lvl._source, fieldPath) : undefined);
+      if (lvlVal && normalizePath(lvlVal) === cleanOld) {
+        const lvlId = lvl.id ?? lvl._id ?? String(idx);
+        const ok = await this._updateSceneLevel(scene, lvlId, idx, fieldPath, encodedPath);
+        if (ok) levelUpdated = true;
+      }
+    }
+
+    // 2. Update the Scene root using nested object payload `{ background: { src: encodedPath } }`
+    const expandedPayload = foundry.utils.expandObject({ [fieldPath]: encodedPath });
+    await scene.update(expandedPayload);
+
+    const readSceneField = () => {
+      const liveVal = foundry.utils.getProperty(scene, fieldPath);
+      const srcVal = scene._source ? foundry.utils.getProperty(scene._source, fieldPath) : undefined;
+      return { liveVal, srcVal };
+    };
+
+    let { liveVal, srcVal } = readSceneField();
+    let verified =
+      normalizePath(liveVal ?? "") === cleanNew ||
+      normalizePath(srcVal ?? "") === cleanNew ||
+      levelUpdated;
+
+    // 3. Fallback retry if `scene._source` still holds `oldPath`
+    if (!verified) {
+      if (fieldPath === "background.src") {
+        const bgClone = foundry.utils.deepClone(scene._source?.background ?? scene.background ?? {});
+        bgClone.src = encodedPath;
+        await scene.update({ background: bgClone });
+      } else {
+        await scene.update({ [fieldPath]: encodedPath });
+      }
+      ({ liveVal, srcVal } = readSceneField());
+      verified =
+        normalizePath(liveVal ?? "") === cleanNew ||
+        normalizePath(srcVal ?? "") === cleanNew ||
+        levelUpdated;
+    }
+
+    if (!verified) {
+      throw new Error(
+        `Post-update verification failed for Scene "${scene.name}" (${fieldPath}): value remained "${srcVal ?? liveVal}" instead of "${encodedPath}"`
+      );
+    }
+
+    // 4. Regenerate thumbnail when background is updated so the sidebar navigation preview updates too
+    if (fieldPath === "background.src" && typeof scene.createThumbnail === "function") {
+      try {
+        const thumbData = await scene.createThumbnail({ img: encodedPath });
+        if (thumbData?.thumb) {
+          await scene.update({ thumb: thumbData.thumb });
+        }
+      } catch (thumbErr) {
+        console.warn(`${MODULE_ID} | Thumbnail regeneration skipped for "${scene.name}":`, thumbErr);
+      }
+    }
+
+    // 5. Re-render SceneConfig window if currently open on screen
+    if (scene.sheet?.rendered) {
+      try {
+        scene.sheet.render(true);
+      } catch (_sheetErr) {
+        // Ignore
+      }
+    }
+  }
+
+  /**
    * Apply all confirmed path updates (including user-selected collision resolutions).
-   * Resiliently wraps each update in try/catch so a single failure never aborts the batch.
+   * Resiliently wraps each update in try/catch and performs post-write verification.
    * @param {object} findings - The findings object from `scanWorldDocuments`
    * @returns {Promise<object>} Final execution summary report
    */
@@ -1346,7 +1767,7 @@ export class AssetPathRepairEngine {
       if (item.included !== false && item.newPath) {
         actionable.push({
           ...item,
-          targetPath: item.newPath
+          targetPath: encodeFoundryPath(item.newPath)
         });
       }
     }
@@ -1355,7 +1776,7 @@ export class AssetPathRepairEngine {
       if (col.selectedPath && col.selectedPath !== "skip") {
         actionable.push({
           ...col,
-          targetPath: col.selectedPath
+          targetPath: encodeFoundryPath(col.selectedPath)
         });
       }
     }
@@ -1373,6 +1794,8 @@ export class AssetPathRepairEngine {
       activeSceneModified: false,
       records: []
     };
+
+    let modifiedActiveScene = null;
 
     const recordResult = (entry, success, errorMsg = "") => {
       if (success) {
@@ -1396,8 +1819,7 @@ export class AssetPathRepairEngine {
       });
     };
 
-    // Group HTML replacements per target document + fieldPath so multiple <img>/<video>/<audio> tags
-    // in the same HTML string are replaced together without overwriting each other.
+    // Group HTML replacements per target document + fieldPath
     const htmlGroups = new Map();
     // Group Card face array updates per stackId + cardId
     const cardFaceGroups = new Map();
@@ -1434,33 +1856,93 @@ export class AssetPathRepairEngine {
     // 1. Process direct single-field updates
     for (const entry of directEntries) {
       const desc = entry.updateDescriptor;
+      const encodedPath = entry.targetPath;
       try {
         if (desc.kind === "sceneRoot") {
           const scene = game.scenes?.get(desc.sceneId);
           if (!scene) throw new Error(`Scene ${desc.sceneId} not found`);
-          const opts = desc.noDiff ? { diff: false } : {};
-          await scene.update({ [desc.fieldPath]: entry.targetPath }, opts);
-          if (scene.id === canvas?.scene?.id) summary.activeSceneModified = true;
+          await this._updateSceneRootAndLevels(scene, desc.fieldPath, entry.oldPath, encodedPath);
+          if (scene.id === canvas?.scene?.id) {
+            summary.activeSceneModified = true;
+            modifiedActiveScene = scene;
+          }
+          recordResult(entry, true);
+        } else if (desc.kind === "sceneLevel") {
+          const scene = game.scenes?.get(desc.sceneId);
+          if (!scene) throw new Error(`Scene ${desc.sceneId} not found`);
+          const ok = await this._updateSceneLevel(
+            scene,
+            desc.levelId,
+            desc.levelIndex,
+            desc.fieldPath,
+            encodedPath
+          );
+          if (!ok) {
+            throw new Error(
+              `Post-update verification failed for Scene Level "${entry.docName}" (${desc.fieldPath})`
+            );
+          }
+          if (desc.fieldPath === "background.src" && typeof scene.createThumbnail === "function") {
+            try {
+              const thumbData = await scene.createThumbnail({ img: encodedPath });
+              if (thumbData?.thumb) await scene.update({ thumb: thumbData.thumb });
+            } catch (_e) {
+              // Ignore thumbnail errors
+            }
+          }
+          if (scene.sheet?.rendered) {
+            try {
+              scene.sheet.render(true);
+            } catch (_e) {
+              // Ignore
+            }
+          }
+          if (scene.id === canvas?.scene?.id) {
+            summary.activeSceneModified = true;
+            modifiedActiveScene = scene;
+          }
           recordResult(entry, true);
         } else if (desc.kind === "sceneEmbedded") {
           const scene = game.scenes?.get(desc.sceneId);
           if (!scene) throw new Error(`Scene ${desc.sceneId} not found`);
           await scene.updateEmbeddedDocuments(desc.embeddedName, [
-            { _id: desc.docId, [desc.fieldPath]: entry.targetPath }
+            { _id: desc.docId, ...foundry.utils.expandObject({ [desc.fieldPath]: encodedPath }) }
           ]);
-          if (scene.id === canvas?.scene?.id) summary.activeSceneModified = true;
+          if (scene.id === canvas?.scene?.id) {
+            summary.activeSceneModified = true;
+            modifiedActiveScene = scene;
+          }
           recordResult(entry, true);
         } else if (desc.kind === "worldDoc") {
           const collection = game[desc.collectionName];
           const doc = collection?.get(desc.docId);
           if (!doc) throw new Error(`${desc.collectionName} document ${desc.docId} not found`);
-          await doc.update({ [desc.fieldPath]: entry.targetPath });
+          const expandedPayload = foundry.utils.expandObject({ [desc.fieldPath]: encodedPath });
+          await doc.update(expandedPayload);
+
+          // Verify persistence on worldDoc
+          const afterLive = foundry.utils.getProperty(doc, desc.fieldPath);
+          const afterSrc = doc._source ? foundry.utils.getProperty(doc._source, desc.fieldPath) : undefined;
+          if (
+            afterLive !== undefined &&
+            normalizePath(afterLive ?? "") !== normalizePath(encodedPath) &&
+            normalizePath(afterSrc ?? "") !== normalizePath(encodedPath)
+          ) {
+            await doc.update({ [desc.fieldPath]: encodedPath });
+          }
+          if (doc.sheet?.rendered) {
+            try {
+              doc.sheet.render(true);
+            } catch (_e) {
+              // Ignore
+            }
+          }
           recordResult(entry, true);
         } else if (desc.kind === "actorEmbedded") {
           const actor = game.actors?.get(desc.actorId);
           if (!actor) throw new Error(`Actor ${desc.actorId} not found`);
           await actor.updateEmbeddedDocuments(desc.embeddedName, [
-            { _id: desc.docId, [desc.fieldPath]: entry.targetPath }
+            { _id: desc.docId, [desc.fieldPath]: encodedPath }
           ]);
           recordResult(entry, true);
         } else if (desc.kind === "actorItemEffect") {
@@ -1468,42 +1950,42 @@ export class AssetPathRepairEngine {
           const item = actor?.items?.get(desc.itemId);
           if (!item) throw new Error(`Owned Item ${desc.itemId} on Actor ${desc.actorId} not found`);
           await item.updateEmbeddedDocuments("ActiveEffect", [
-            { _id: desc.docId, [desc.fieldPath]: entry.targetPath }
+            { _id: desc.docId, [desc.fieldPath]: encodedPath }
           ]);
           recordResult(entry, true);
         } else if (desc.kind === "itemEmbedded") {
           const item = game.items?.get(desc.itemId);
           if (!item) throw new Error(`World Item ${desc.itemId} not found`);
           await item.updateEmbeddedDocuments(desc.embeddedName, [
-            { _id: desc.docId, [desc.fieldPath]: entry.targetPath }
+            { _id: desc.docId, [desc.fieldPath]: encodedPath }
           ]);
           recordResult(entry, true);
         } else if (desc.kind === "journalPage") {
           const journal = game.journal?.get(desc.journalId);
           if (!journal) throw new Error(`JournalEntry ${desc.journalId} not found`);
           await journal.updateEmbeddedDocuments("JournalEntryPage", [
-            { _id: desc.pageId, [desc.fieldPath]: entry.targetPath }
+            { _id: desc.pageId, [desc.fieldPath]: encodedPath }
           ]);
           recordResult(entry, true);
         } else if (desc.kind === "playlistSound") {
           const playlist = game.playlists?.get(desc.playlistId);
           if (!playlist) throw new Error(`Playlist ${desc.playlistId} not found`);
           await playlist.updateEmbeddedDocuments("PlaylistSound", [
-            { _id: desc.soundId, [desc.fieldPath]: entry.targetPath }
+            { _id: desc.soundId, [desc.fieldPath]: encodedPath }
           ]);
           recordResult(entry, true);
         } else if (desc.kind === "tableResult") {
           const table = game.tables?.get(desc.tableId);
           if (!table) throw new Error(`RollTable ${desc.tableId} not found`);
           await table.updateEmbeddedDocuments("TableResult", [
-            { _id: desc.resultId, [desc.fieldPath]: entry.targetPath }
+            { _id: desc.resultId, [desc.fieldPath]: encodedPath }
           ]);
           recordResult(entry, true);
         } else if (desc.kind === "cardEmbedded") {
           const stack = game.cards?.get(desc.stackId);
           if (!stack) throw new Error(`Cards stack ${desc.stackId} not found`);
           await stack.updateEmbeddedDocuments("Card", [
-            { _id: desc.cardId, [desc.fieldPath]: entry.targetPath }
+            { _id: desc.cardId, [desc.fieldPath]: encodedPath }
           ]);
           recordResult(entry, true);
         }
@@ -1582,7 +2064,7 @@ export class AssetPathRepairEngine {
     // 4. Redraw active canvas if the active scene or its embedded documents were modified
     if (summary.activeSceneModified && canvas?.ready) {
       try {
-        await canvas.draw();
+        await canvas.draw(modifiedActiveScene ?? canvas.scene);
       } catch (err) {
         console.warn(`${MODULE_ID} | canvas.draw() warning:`, err);
       }
