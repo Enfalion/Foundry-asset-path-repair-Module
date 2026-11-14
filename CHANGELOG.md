@@ -4,6 +4,26 @@ All notable changes to the **Asset Path Auto-Repair** module for Foundry Virtual
 
 ---
 
+## [1.0.3] — 2026-11-14
+
+### 🇬🇧 English — Native Foundry V14 `Level#background` & `Level#textures` Implementation
+- **Replaced Deprecated `Scene#background` Access with Native Foundry V14 `Level` Scanning & Updating**:
+  - When `scene.levels` is present (`game.release.generation >= 14` / `scene.levels.size > 0`), the scanner no longer accesses `scene.background` or `scene.foreground`, completely eliminating Foundry V14 deprecation warnings (`Error: Scene#background is deprecated. Use Level#background and Level#textures instead`).
+  - Added `collectLevelAssetFields` to natively inspect `Level#background` (`background.src`), `Level#textures` (recursively discovering any nested texture `.src` / path fields inside `level._source.textures` / `level.textures`), and `Level#foreground` on every embedded `Level` document in `scene.levels`, displaying entries clearly as `${scene.name} [Level: ${level.name || level.id}]`.
+- **Native Embedded `Level` Document Updates (`sceneLevel`)**:
+  - Updates are applied directly to the embedded `Level` document (`await level.update(...)` / `await scene.updateEmbeddedDocuments("Level", ...)`), preserving URI/space encoding and verifying persistence against `level._source`.
+  - Automatically regenerates the Scene thumbnail, re-renders open `SceneConfig` / `Level` sheets, and redraws the active Canvas (`await canvas.draw(scene)`).
+
+### 🇩🇪 Deutsch — Native Foundry V14 `Level#background` & `Level#textures` Implementierung
+- **Ersetzung des veralteten `Scene#background`-Zugriffs durch native Foundry V14 `Level`-Dokumente**:
+  - Sobald `scene.levels` vorhanden ist (Foundry V14+), greift der Scanner nicht mehr auf `scene.background` oder `scene.foreground` zu, wodurch sämtliche V14-Deprecation-Warnungen (`Scene#background is deprecated. Use Level#background and Level#textures instead`) vollständig eliminiert werden.
+  - Neue Funktion `collectLevelAssetFields` zum nativen Auslesen von `Level#background` (`background.src`), `Level#textures` (inkl. rekursiver Erkennung aller Textur-Pfade in `level._source.textures` / `level.textures`) und `Level#foreground` für jedes eingebettete `Level`-Dokument in `scene.levels` (Anzeige als `${scene.name} [Level: ${level.name || level.id}]`).
+- **Native Updates auf eingebetteten `Level`-Dokumenten (`sceneLevel`)**:
+  - Alle Ebenen-Pfade werden direkt auf dem jeweiligen `Level`-Dokument (`await level.update(...)` bzw. `await scene.updateEmbeddedDocuments("Level", ...)`) aktualisiert und unmittelbar gegen `level._source` verifiziert.
+  - Automatische Thumbnail-Neugenerierung, Live-Refresh geöffneter `SceneConfig`-/`Level`-Fenster sowie Canvas-Reload (`await canvas.draw(scene)`).
+
+---
+
 ## [1.0.2] — 2026-11-14
 
 ### 🇬🇧 English — Scene Background Persistence, V14 Levels & Wildcard Token Support

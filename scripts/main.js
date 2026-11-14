@@ -11,6 +11,8 @@ import {
   encodeFoundryPath,
   isWildcardPath,
   wildcardToRegExp,
+  getSceneLevelsList,
+  collectLevelAssetFields,
   AssetPathRepairEngine
 } from "./repair.js";
 
@@ -20,6 +22,8 @@ export {
   encodeFoundryPath,
   isWildcardPath,
   wildcardToRegExp,
+  getSceneLevelsList,
+  collectLevelAssetFields,
   AssetPathRepairEngine
 };
 

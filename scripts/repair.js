@@ -1,8 +1,9 @@
 /**
  * Asset Path Auto-Repair — Core Engine (Foundry VTT V12–V14, backwards-compatible with V11)
  * Recursively indexes Data directories, detects orphaned LevelDB asset references across all
- * Foundry VTT document types and embedded collections (including V14 Scene Levels and wildcard paths),
- * handles filename collisions safely, parses HTML media tags, and executes verified database updates.
+ * Foundry VTT document types and embedded collections (natively using Foundry V14 Level#background
+ * and Level#textures on Scene#levels as well as wildcard token paths), handles filename collisions
+ * safely, parses HTML media tags, and executes verified database updates.
  */
 
 export const MODULE_ID = "asset-path-repair";
@@ -361,7 +362,7 @@ export function looksLikeMediaPath(candidate) {
 }
 
 /**
- * Safely extract all Level entries from a Foundry V14 `scene.levels` collection or `_source.levels` array.
+ * Safely extract all Level documents/entries from a Foundry V14 `scene.levels` collection.
  * @param {any} scene
  * @returns {any[]}
  */
@@ -376,6 +377,74 @@ export function getSceneLevelsList(scene) {
   if (typeof levels[Symbol.iterator] === "function") return Array.from(levels);
   if (typeof levels === "object") return Object.values(levels);
   return [];
+}
+
+/**
+ * Discover all asset file path fields on a Foundry V14 `Level` document
+ * (`Level#background`, `Level#textures`, `Level#foreground`) without triggering any deprecated getters.
+ * @param {any} level
+ * @returns {Array<{ fieldPath: string, rawPath: string }>}
+ */
+export function collectLevelAssetFields(level) {
+  const results = [];
+  const seenFields = new Set();
+  if (!level) return results;
+
+  const addField = (fieldPath, rawPath) => {
+    if (!fieldPath || seenFields.has(fieldPath)) return;
+    if (typeof rawPath !== "string" || !rawPath.trim()) return;
+    seenFields.add(fieldPath);
+    results.push({ fieldPath, rawPath });
+  };
+
+  const srcObj = level._source ?? level;
+
+  // 1. Level#background (`background.src` or string `background`)
+  const bg = srcObj.background ?? level.background;
+  if (typeof bg === "string") {
+    addField("background", bg);
+  } else if (typeof bg?.src === "string") {
+    addField("background.src", bg.src);
+  }
+
+  // 2. Level#foreground (`foreground.src` or string `foreground`)
+  const fg = srcObj.foreground ?? level.foreground;
+  if (typeof fg === "string") {
+    addField("foreground", fg);
+  } else if (typeof fg?.src === "string") {
+    addField("foreground.src", fg.src);
+  }
+
+  // 3. Level#textures (recursively inspect nested texture/src fields inside `level._source.textures` / `level.textures`)
+  const inspectTexturesObj = (obj, prefix = "textures", depth = 0) => {
+    if (!obj || typeof obj !== "object" || depth > 3) return;
+    for (const [k, v] of Object.entries(obj)) {
+      if (k.startsWith("_")) continue;
+      const dotPath = `${prefix}.${k}`;
+      if (typeof v === "string" && v.trim()) {
+        if (
+          k === "src" ||
+          k === "path" ||
+          k === "img" ||
+          k === "texture" ||
+          looksLikeMediaPath(v) ||
+          isWildcardPath(v)
+        ) {
+          addField(dotPath, v);
+        }
+      } else if (v && typeof v === "object" && !Array.isArray(v)) {
+        inspectTexturesObj(v, dotPath, depth + 1);
+      }
+    }
+  };
+
+  if (srcObj.textures && typeof srcObj.textures === "object") {
+    inspectTexturesObj(srcObj.textures, "textures", 0);
+  } else if (level.textures && typeof level.textures === "object") {
+    inspectTexturesObj(level.textures, "textures", 0);
+  }
+
+  return results;
 }
 
 /**
@@ -837,7 +906,9 @@ export class AssetPathRepairEngine {
   /**
    * Scan all Foundry V14 document collections and embedded collections for broken asset paths.
    * Covers:
-   * 1. Scenes (background.src, foreground, thumb, V14 scene.levels, tiles, tokens + ring.subject.texture, sounds, notes)
+   * 1. Scenes (natively scanning Foundry V14 `scene.levels` -> `Level#background` & `Level#textures` without touching
+   *    deprecated `Scene#background`, with fallback to `scene._source.background` only on V11–V13; plus `thumb`,
+   *    `tiles`, `tokens` + `ring.subject.texture`, `sounds`, `notes`)
    * 2. Actors (img, prototypeToken.texture.src, prototypeToken.ring.subject.texture, system HTML, items, effects)
    * 3. World Items (img, system HTML, effects)
    * 4. Journal Entries & Pages (image/video/pdf/audio src, text HTML content)
@@ -914,109 +985,92 @@ export class AssetPathRepairEngine {
     };
 
     // =========================================================================
-    // 1. SCENES (game.scenes) + FOUNDRY V14 SCENE LEVELS (scene.levels)
+    // 1. SCENES (game.scenes) — Native Foundry V14 `scene.levels` (`Level` docs)
     // =========================================================================
     for (const scene of game.scenes ?? []) {
       const sceneName = scene.name || scene.id;
-      const rootBgSrc = scene.background?.src ?? scene._source?.background?.src;
+      const levelsList = getSceneLevelsList(scene);
 
-      if (rootBgSrc) {
-        await checkReference({
-          docTypeKey: "APR.DocType.Scene",
-          docCategory: "scenes",
-          docName: sceneName,
-          fieldPath: "background.src",
-          rawPath: rootBgSrc,
-          updateDescriptor: {
-            kind: "sceneRoot",
-            sceneId: scene.id,
-            fieldPath: "background.src"
+      if (levelsList.length > 0) {
+        // Foundry V14+: Do NOT access `scene.background` or `scene.foreground` (deprecated in V14).
+        // Scan embedded `Level` documents (`Level#background` and `Level#textures`) inside `scene.levels`.
+        for (let lvlIdx = 0; lvlIdx < levelsList.length; lvlIdx++) {
+          const level = levelsList[lvlIdx];
+          if (!level) continue;
+          const levelId = level.id ?? level._id ?? String(lvlIdx);
+          const levelName = level.name || level.label || levelId;
+          const levelDocLabel = `${sceneName} [Level: ${levelName}]`;
+
+          const levelFields = collectLevelAssetFields(level);
+          for (const lf of levelFields) {
+            await checkReference({
+              docTypeKey: "APR.DocType.Scene",
+              docCategory: "scenes",
+              docName: levelDocLabel,
+              fieldPath: lf.fieldPath,
+              rawPath: lf.rawPath,
+              updateDescriptor: {
+                kind: "sceneLevel",
+                sceneId: scene.id,
+                levelId,
+                levelIndex: lvlIdx,
+                fieldPath: lf.fieldPath
+              }
+            });
           }
-        });
+        }
+      } else if ((game?.release?.generation ?? 0) < 14) {
+        // Legacy Fallback ONLY for Foundry V11/V12/V13 where `scene.levels` does not exist
+        const legacyBgSrc = scene._source?.background?.src ?? scene.background?.src;
+        if (legacyBgSrc) {
+          await checkReference({
+            docTypeKey: "APR.DocType.Scene",
+            docCategory: "scenes",
+            docName: sceneName,
+            fieldPath: "background.src",
+            rawPath: legacyBgSrc,
+            updateDescriptor: {
+              kind: "sceneRoot",
+              sceneId: scene.id,
+              fieldPath: "background.src"
+            }
+          });
+        }
+
+        const rawFg = scene._source ? scene._source.foreground : scene.foreground;
+        const fgSrc = typeof rawFg === "string" ? rawFg : rawFg?.src;
+        const fgField = typeof rawFg === "string" ? "foreground" : "foreground.src";
+        if (fgSrc) {
+          await checkReference({
+            docTypeKey: "APR.DocType.Scene",
+            docCategory: "scenes",
+            docName: sceneName,
+            fieldPath: fgField,
+            rawPath: fgSrc,
+            updateDescriptor: {
+              kind: "sceneRoot",
+              sceneId: scene.id,
+              fieldPath: fgField
+            }
+          });
+        }
       }
 
-      const fgSrc = typeof scene.foreground === "string" ? scene.foreground : scene.foreground?.src;
-      const fgField = typeof scene.foreground === "string" ? "foreground" : "foreground.src";
-      if (fgSrc) {
-        await checkReference({
-          docTypeKey: "APR.DocType.Scene",
-          docCategory: "scenes",
-          docName: sceneName,
-          fieldPath: fgField,
-          rawPath: fgSrc,
-          updateDescriptor: {
-            kind: "sceneRoot",
-            sceneId: scene.id,
-            fieldPath: fgField
-          }
-        });
-      }
-
-      if (scene.thumb && !scene.thumb.startsWith("data:")) {
+      // Scene thumbnail (if referencing a file path rather than inline data URI)
+      const sceneThumb = scene._source ? scene._source.thumb : scene.thumb;
+      if (sceneThumb && !sceneThumb.startsWith("data:")) {
         await checkReference({
           docTypeKey: "APR.DocType.Scene",
           docCategory: "scenes",
           docName: sceneName,
           fieldPath: "thumb",
-          rawPath: scene.thumb,
+          rawPath: sceneThumb,
           updateDescriptor: {
             kind: "sceneRoot",
             sceneId: scene.id,
             fieldPath: "thumb"
           }
         });
-      }
-
-      // Foundry V14 Scene Levels ("Aktuelle Ebene" / `scene.levels`)
-      const levelsList = getSceneLevelsList(scene);
-      for (let lvlIdx = 0; lvlIdx < levelsList.length; lvlIdx++) {
-        const level = levelsList[lvlIdx];
-        if (!level) continue;
-        const levelId = level.id ?? level._id ?? String(lvlIdx);
-        const levelName = level.name || level.label || `Level #${lvlIdx + 1}`;
-        const levelLabel = `${sceneName} → ${levelName}`;
-
-        const lvlBgSrc = level.background?.src ?? level._source?.background?.src;
-        // If rootBgSrc already matched this exact path, sceneRoot's updater will update both scene and matching levels.
-        // If rootBgSrc was empty or different, register a dedicated sceneLevel finding.
-        if (lvlBgSrc && normalizePath(lvlBgSrc) !== normalizePath(rootBgSrc ?? "")) {
-          await checkReference({
-            docTypeKey: "APR.DocType.Scene",
-            docCategory: "scenes",
-            docName: levelLabel,
-            fieldPath: "background.src",
-            rawPath: lvlBgSrc,
-            updateDescriptor: {
-              kind: "sceneLevel",
-              sceneId: scene.id,
-              levelId,
-              levelIndex: lvlIdx,
-              fieldPath: "background.src"
-            }
-          });
-        }
-
-        const lvlFgSrc =
-          typeof level.foreground === "string"
-            ? level.foreground
-            : (level.foreground?.src ?? level._source?.foreground?.src);
-        const lvlFgField = typeof level.foreground === "string" ? "foreground" : "foreground.src";
-        if (lvlFgSrc && normalizePath(lvlFgSrc) !== normalizePath(fgSrc ?? "")) {
-          await checkReference({
-            docTypeKey: "APR.DocType.Scene",
-            docCategory: "scenes",
-            docName: levelLabel,
-            fieldPath: lvlFgField,
-            rawPath: lvlFgSrc,
-            updateDescriptor: {
-              kind: "sceneLevel",
-              sceneId: scene.id,
-              levelId,
-              levelIndex: lvlIdx,
-              fieldPath: lvlFgField
-            }
-          });
-        }
       }
 
       // Embedded Tiles
@@ -1591,139 +1645,139 @@ export class AssetPathRepairEngine {
   }
 
   /**
-   * Helper to update a specific level inside `scene.levels` (supports both V14 EmbeddedCollection Level documents
-   * and array-based `_source.levels` schemas) and verify the update.
+   * Update a Foundry V14 `Level` embedded document inside `scene.levels`
+   * (`level.update` / `scene.updateEmbeddedDocuments("Level", ...)`), preserving URI/decoded format
+   * and verifying against `level._source`.
    * @param {any} scene
    * @param {string} levelId
    * @param {number} levelIndex
    * @param {string} fieldPath
    * @param {string} encodedPath
+   * @param {string} oldPath
    * @returns {Promise<boolean>}
    */
-  async _updateSceneLevel(scene, levelId, levelIndex, fieldPath, encodedPath) {
+  async _updateSceneLevel(scene, levelId, levelIndex, fieldPath, encodedPath, oldPath = "") {
     const levelsList = getSceneLevelsList(scene);
     const level =
       scene.levels?.get?.(levelId) ??
       levelsList.find((l) => (l?.id ?? l?._id) === levelId) ??
       levelsList[levelIndex];
 
-    const checkLevelChanged = () => {
+    if (!level) return false;
+
+    const cleanTarget = normalizePath(encodedPath);
+    const decodedPath = cleanTarget;
+    // Prefer the encoding style of oldPath if oldPath had literal spaces, otherwise use URI-encoded path
+    const preferredPath =
+      oldPath && oldPath.includes(" ") && !oldPath.includes("%20") ? decodedPath : encodedPath;
+    const alternatePath = preferredPath === encodedPath ? decodedPath : encodedPath;
+
+    const checkLevelPersisted = () => {
       const refreshedList = getSceneLevelsList(scene);
       const currentLvl =
         scene.levels?.get?.(levelId) ??
         refreshedList.find((l) => (l?.id ?? l?._id) === levelId) ??
         refreshedList[levelIndex];
       if (!currentLvl) return false;
-      const valLive = foundry.utils.getProperty(currentLvl, fieldPath);
       const valSrc = currentLvl._source ? foundry.utils.getProperty(currentLvl._source, fieldPath) : undefined;
+      const valLive = foundry.utils.getProperty(currentLvl, fieldPath);
       return (
-        normalizePath(valLive ?? "") === normalizePath(encodedPath) ||
-        normalizePath(valSrc ?? "") === normalizePath(encodedPath)
+        normalizePath(valSrc ?? "") === cleanTarget ||
+        normalizePath(valLive ?? "") === cleanTarget
       );
     };
 
-    const expanded = foundry.utils.expandObject({ [fieldPath]: encodedPath });
+    const tryUpdateWithPath = async (candidatePath) => {
+      const flatPayload = { [fieldPath]: candidatePath };
+      const expandedPayload = foundry.utils.expandObject(flatPayload);
 
-    // 1. Try direct Document#update on the Level document
-    if (level && typeof level.update === "function") {
-      try {
-        await level.update(expanded);
-        if (checkLevelChanged()) return true;
-      } catch (_err) {
-        // Fall through to embedded update
-      }
-    }
-
-    // 2. Try scene.updateEmbeddedDocuments("Level" / level.documentName)
-    if (level && typeof scene.updateEmbeddedDocuments === "function") {
-      const docName = level.documentName || "Level";
-      try {
-        await scene.updateEmbeddedDocuments(docName, [
-          { _id: level.id ?? level._id ?? levelId, ...expanded }
-        ]);
-        if (checkLevelChanged()) return true;
-      } catch (_err) {
-        // Fall through to array update
-      }
-    }
-
-    // 3. Fallback: if `scene._source.levels` is an array on Scene DataModel
-    if (Array.isArray(scene._source?.levels)) {
-      try {
-        const clonedLevels = foundry.utils.deepClone(scene._source.levels);
-        const targetIdx = clonedLevels.findIndex((l, idx) => (l?._id ?? l?.id ?? String(idx)) === levelId);
-        const idxToUse = targetIdx !== -1 ? targetIdx : levelIndex;
-        if (clonedLevels[idxToUse]) {
-          foundry.utils.setProperty(clonedLevels[idxToUse], fieldPath, encodedPath);
-          await scene.update({ levels: clonedLevels });
-          if (checkLevelChanged()) return true;
+      // 1. Direct `level.update(...)` on the embedded Level document
+      if (typeof level.update === "function") {
+        try {
+          await level.update(flatPayload);
+          if (checkLevelPersisted()) return true;
+        } catch (_err) {
+          // Continue to expanded payload
         }
-      } catch (_err) {
-        // Ignore
+        try {
+          await level.update(expandedPayload);
+          if (checkLevelPersisted()) return true;
+        } catch (_err) {
+          // Continue to updateEmbeddedDocuments
+        }
       }
-    }
 
-    return checkLevelChanged();
+      // 2. Via parent Scene: `scene.updateEmbeddedDocuments("Level", ...)`
+      if (typeof scene.updateEmbeddedDocuments === "function") {
+        const docName = level.documentName || "Level";
+        const targetId = level.id ?? level._id ?? levelId;
+        try {
+          await scene.updateEmbeddedDocuments(docName, [{ _id: targetId, ...flatPayload }]);
+          if (checkLevelPersisted()) return true;
+        } catch (_err) {
+          // Continue
+        }
+        try {
+          await scene.updateEmbeddedDocuments(docName, [{ _id: targetId, ...expandedPayload }]);
+          if (checkLevelPersisted()) return true;
+        } catch (_err) {
+          // Continue
+        }
+      }
+
+      // 3. Fallback if `scene._source.levels` is a plain array
+      if (Array.isArray(scene._source?.levels)) {
+        try {
+          const clonedLevels = foundry.utils.deepClone(scene._source.levels);
+          const targetIdx = clonedLevels.findIndex((l, idx) => (l?._id ?? l?.id ?? String(idx)) === levelId);
+          const idxToUse = targetIdx !== -1 ? targetIdx : levelIndex;
+          if (clonedLevels[idxToUse]) {
+            foundry.utils.setProperty(clonedLevels[idxToUse], fieldPath, candidatePath);
+            await scene.update({ levels: clonedLevels });
+            if (checkLevelPersisted()) return true;
+          }
+        } catch (_err) {
+          // Ignore
+        }
+      }
+
+      return checkLevelPersisted();
+    };
+
+    if (await tryUpdateWithPath(preferredPath)) return true;
+    if (alternatePath !== preferredPath && (await tryUpdateWithPath(alternatePath))) return true;
+    return false;
   }
 
   /**
-   * Update a Scene root field (`background.src`, `foreground.src`, `thumb`), synchronize any matching V14 `scene.levels`
-   * entries, verify persistence in `_source`, regenerate the scene thumbnail, and refresh open `SceneConfig` sheets.
+   * Legacy V11–V13 Scene root field updater (`background.src`, `foreground.src`, `thumb`).
+   * On V14+, `thumb` also uses this helper, while `background` and `foreground` are updated on `Level` via `_updateSceneLevel`.
    * @param {any} scene
    * @param {string} fieldPath
-   * @param {string} oldPath
    * @param {string} encodedPath
    */
-  async _updateSceneRootAndLevels(scene, fieldPath, oldPath, encodedPath) {
-    const cleanOld = normalizePath(oldPath);
+  async _updateLegacySceneRoot(scene, fieldPath, encodedPath) {
     const cleanNew = normalizePath(encodedPath);
-
-    // 1. Also update any V14 `scene.levels` whose fieldPath matches `oldPath`
-    let levelUpdated = false;
-    const levelsList = getSceneLevelsList(scene);
-    for (let idx = 0; idx < levelsList.length; idx++) {
-      const lvl = levelsList[idx];
-      if (!lvl) continue;
-      const lvlVal =
-        foundry.utils.getProperty(lvl, fieldPath) ??
-        (lvl._source ? foundry.utils.getProperty(lvl._source, fieldPath) : undefined);
-      if (lvlVal && normalizePath(lvlVal) === cleanOld) {
-        const lvlId = lvl.id ?? lvl._id ?? String(idx);
-        const ok = await this._updateSceneLevel(scene, lvlId, idx, fieldPath, encodedPath);
-        if (ok) levelUpdated = true;
-      }
-    }
-
-    // 2. Update the Scene root using nested object payload `{ background: { src: encodedPath } }`
     const expandedPayload = foundry.utils.expandObject({ [fieldPath]: encodedPath });
     await scene.update(expandedPayload);
 
     const readSceneField = () => {
-      const liveVal = foundry.utils.getProperty(scene, fieldPath);
       const srcVal = scene._source ? foundry.utils.getProperty(scene._source, fieldPath) : undefined;
+      const liveVal = srcVal ?? foundry.utils.getProperty(scene, fieldPath);
       return { liveVal, srcVal };
     };
 
     let { liveVal, srcVal } = readSceneField();
     let verified =
-      normalizePath(liveVal ?? "") === cleanNew ||
       normalizePath(srcVal ?? "") === cleanNew ||
-      levelUpdated;
+      normalizePath(liveVal ?? "") === cleanNew;
 
-    // 3. Fallback retry if `scene._source` still holds `oldPath`
     if (!verified) {
-      if (fieldPath === "background.src") {
-        const bgClone = foundry.utils.deepClone(scene._source?.background ?? scene.background ?? {});
-        bgClone.src = encodedPath;
-        await scene.update({ background: bgClone });
-      } else {
-        await scene.update({ [fieldPath]: encodedPath });
-      }
+      await scene.update({ [fieldPath]: encodedPath });
       ({ liveVal, srcVal } = readSceneField());
       verified =
-        normalizePath(liveVal ?? "") === cleanNew ||
         normalizePath(srcVal ?? "") === cleanNew ||
-        levelUpdated;
+        normalizePath(liveVal ?? "") === cleanNew;
     }
 
     if (!verified) {
@@ -1732,7 +1786,6 @@ export class AssetPathRepairEngine {
       );
     }
 
-    // 4. Regenerate thumbnail when background is updated so the sidebar navigation preview updates too
     if (fieldPath === "background.src" && typeof scene.createThumbnail === "function") {
       try {
         const thumbData = await scene.createThumbnail({ img: encodedPath });
@@ -1744,7 +1797,6 @@ export class AssetPathRepairEngine {
       }
     }
 
-    // 5. Re-render SceneConfig window if currently open on screen
     if (scene.sheet?.rendered) {
       try {
         scene.sheet.render(true);
@@ -1858,16 +1910,7 @@ export class AssetPathRepairEngine {
       const desc = entry.updateDescriptor;
       const encodedPath = entry.targetPath;
       try {
-        if (desc.kind === "sceneRoot") {
-          const scene = game.scenes?.get(desc.sceneId);
-          if (!scene) throw new Error(`Scene ${desc.sceneId} not found`);
-          await this._updateSceneRootAndLevels(scene, desc.fieldPath, entry.oldPath, encodedPath);
-          if (scene.id === canvas?.scene?.id) {
-            summary.activeSceneModified = true;
-            modifiedActiveScene = scene;
-          }
-          recordResult(entry, true);
-        } else if (desc.kind === "sceneLevel") {
+        if (desc.kind === "sceneLevel") {
           const scene = game.scenes?.get(desc.sceneId);
           if (!scene) throw new Error(`Scene ${desc.sceneId} not found`);
           const ok = await this._updateSceneLevel(
@@ -1875,19 +1918,31 @@ export class AssetPathRepairEngine {
             desc.levelId,
             desc.levelIndex,
             desc.fieldPath,
-            encodedPath
+            encodedPath,
+            entry.oldPath
           );
           if (!ok) {
             throw new Error(
               `Post-update verification failed for Scene Level "${entry.docName}" (${desc.fieldPath})`
             );
           }
-          if (desc.fieldPath === "background.src" && typeof scene.createThumbnail === "function") {
+          if (
+            (desc.fieldPath === "background.src" || desc.fieldPath.includes("background")) &&
+            typeof scene.createThumbnail === "function"
+          ) {
             try {
               const thumbData = await scene.createThumbnail({ img: encodedPath });
               if (thumbData?.thumb) await scene.update({ thumb: thumbData.thumb });
             } catch (_e) {
               // Ignore thumbnail errors
+            }
+          }
+          const levelDoc = scene.levels?.get?.(desc.levelId);
+          if (levelDoc?.sheet?.rendered) {
+            try {
+              levelDoc.sheet.render(true);
+            } catch (_e) {
+              // Ignore
             }
           }
           if (scene.sheet?.rendered) {
@@ -1897,7 +1952,16 @@ export class AssetPathRepairEngine {
               // Ignore
             }
           }
-          if (scene.id === canvas?.scene?.id) {
+          if (scene.id === globalThis.canvas?.scene?.id) {
+            summary.activeSceneModified = true;
+            modifiedActiveScene = scene;
+          }
+          recordResult(entry, true);
+        } else if (desc.kind === "sceneRoot") {
+          const scene = game.scenes?.get(desc.sceneId);
+          if (!scene) throw new Error(`Scene ${desc.sceneId} not found`);
+          await this._updateLegacySceneRoot(scene, desc.fieldPath, encodedPath);
+          if (scene.id === globalThis.canvas?.scene?.id) {
             summary.activeSceneModified = true;
             modifiedActiveScene = scene;
           }
@@ -1908,7 +1972,7 @@ export class AssetPathRepairEngine {
           await scene.updateEmbeddedDocuments(desc.embeddedName, [
             { _id: desc.docId, ...foundry.utils.expandObject({ [desc.fieldPath]: encodedPath }) }
           ]);
-          if (scene.id === canvas?.scene?.id) {
+          if (scene.id === globalThis.canvas?.scene?.id) {
             summary.activeSceneModified = true;
             modifiedActiveScene = scene;
           }
@@ -2007,7 +2071,7 @@ export class AssetPathRepairEngine {
             content = content.replaceAll(e.oldPath, e.targetPath);
           }
           await journal.updateEmbeddedDocuments("JournalEntryPage", [
-            { _id: desc.pageId, "text.content": content }
+            { _id: page.id, "text.content": content }
           ]);
           for (const e of entries) recordResult(e, true);
         } else if (desc.kind === "worldDocHtml") {
@@ -2062,9 +2126,9 @@ export class AssetPathRepairEngine {
     }
 
     // 4. Redraw active canvas if the active scene or its embedded documents were modified
-    if (summary.activeSceneModified && canvas?.ready) {
+    if (summary.activeSceneModified && globalThis.canvas?.ready) {
       try {
-        await canvas.draw(modifiedActiveScene ?? canvas.scene);
+        await globalThis.canvas.draw(modifiedActiveScene ?? globalThis.canvas.scene);
       } catch (err) {
         console.warn(`${MODULE_ID} | canvas.draw() warning:`, err);
       }
